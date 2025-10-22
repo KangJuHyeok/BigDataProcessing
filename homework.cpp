@@ -5,7 +5,7 @@
 #include <atomic>
 #include <mutex>
 #include <cmath> 
-#include <algorithm> // std::min을 사용하기 위해 추가
+#include <algorithm> 
 
 using namespace std;
 
@@ -62,13 +62,12 @@ class TTAS_Lock {
 public:
     void lock() {
         while (true) {
-            if (!lock_flag.load()) { // 1차 Test: 캐시에서 확인
+            if (!lock_flag.load()) { 
                 bool expected = false;
-                if (lock_flag.compare_exchange_weak(expected, true)) { // 2차 Test-and-Set: Atomic 연산
-                    return; // 락 획득 성공
+                if (lock_flag.compare_exchange_weak(expected, true)) { 
+                    return; 
                 }
             }
-            // 락이 잡혀있으면 캐시에서 계속 스핀
         }
     }
     void unlock() {
@@ -87,19 +86,16 @@ public:
         const int MAX_DELAY = 1024;
         
         while (true) {
-            if (!lock_flag.load()) { // 1차 Test
+            if (!lock_flag.load()) { 
                 bool expected = false;
-                if (lock_flag.compare_exchange_weak(expected, true)) { // 2차 Test-and-Set
-                    return; // 락 획득 성공
+                if (lock_flag.compare_exchange_weak(expected, true)) { 
+                    return; 
                 }
             }
             
-            // Backoff: 일정 시간 대기 (Busy-wait)
             for (int i = 0; i < current_delay; ++i) {
-                // 여기에 실제 Backoff 지연
             }
 
-            // delay 증가 (지수적 백오프)
             current_delay = std::min(current_delay * 2, MAX_DELAY);
         }
     }
@@ -111,20 +107,28 @@ public:
 
 // =================================================
 
-// 템플릿을 사용하여 다양한 락 메커니즘을 적용할 수 있도록 함수를 일반화합니다.
+/**
+ * @brief 스레드 작업 함수 (Lock 사용)
+ * @param start_val 스레드가 합산할 시작 숫자
+ * @param end_val 스레드가 합산할 종료 숫자
+ */
 template<typename LockType>
-void worker_function_with_lock(int thread_id, LockType& lock_instance, long long& counter, int iterations_per_thread) {
-    for (int i = 0; i < iterations_per_thread; ++i) {
+void worker_function_with_lock(LockType& lock_instance, long long& counter, int start_val, int end_val) {
+    for (int i = start_val; i <= end_val; ++i) {
         lock_instance.lock();
-        counter++; // Critical Section: 공유 카운터 증가
+        counter += i; // Critical Section: 실제 숫자를 공유 카운터에 더함
         lock_instance.unlock();
     }
 }
 
-// No Lock 전용 Worker 함수
-void worker_function_no_lock(int thread_id, long long& counter, int iterations_per_thread) {
-    for (int i = 0; i < iterations_per_thread; ++i) {
-        counter++; // Critical Section: 공유 카운터 증가
+/**
+ * @brief 스레드 작업 함수 (No Lock 사용)
+ * @param start_val 스레드가 합산할 시작 숫자
+ * @param end_val 스레드가 합산할 종료 숫자
+ */
+void worker_function_no_lock(long long& counter, int start_val, int end_val) {
+    for (int i = start_val; i <= end_val; ++i) {
+        counter += i; // Critical Section: 실제 숫자를 공유 카운터에 더함
     }
 }
 
@@ -139,24 +143,38 @@ double run_experiment(const string& lock_name, int num_threads, bool use_lock = 
     shared_counter = 0;
     LockType lock_instance;
     
-    // 각 스레드가 처리할 연산 횟수 분배
-    int iterations_per_thread = NUM_OPERATIONS / num_threads;
-    int remaining_iterations = NUM_OPERATIONS % num_threads;
+    // [**1. 정답 계산 (가우스 공식)**]
+    // 1부터 N까지의 합: N * (N + 1) / 2
+    // S부터 E까지의 합: (1부터 E까지의 합) - (1부터 S-1까지의 합)
+    long long sum_to_end = (long long)END_NUM * (END_NUM + 1) / 2;
+    long long sum_to_start_minus_1 = (long long)(START_NUM - 1) * START_NUM / 2;
+    long long expected_result = sum_to_end - sum_to_start_minus_1;
 
+
+    // [**2. 작업 범위 분배**]
     vector<thread> threads;
     auto start_time = chrono::high_resolution_clock::now();
-
-    // 스레드 생성 및 실행
+    
+    int current_start = START_NUM;
+    
     for (int i = 0; i < num_threads; ++i) {
-        int thread_iterations = iterations_per_thread + (i < remaining_iterations ? 1 : 0);
-        
+        // 각 스레드가 처리할 숫자의 개수
+        int range_size = NUM_OPERATIONS / num_threads + (i < NUM_OPERATIONS % num_threads ? 1 : 0);
+        int current_end = current_start + range_size - 1;
+
+        if (current_end > END_NUM) { // 마지막 스레드 보정
+            current_end = END_NUM;
+        }
+
         if (use_lock) {
             // 락을 사용하는 경우
-            threads.emplace_back(worker_function_with_lock<LockType>, i, ref(lock_instance), ref(shared_counter), thread_iterations);
+            threads.emplace_back(worker_function_with_lock<LockType>, ref(lock_instance), ref(shared_counter), current_start, current_end);
         } else {
             // No Lock (락을 사용하지 않는 경우)
-            threads.emplace_back(worker_function_no_lock, i, ref(shared_counter), thread_iterations);
+            threads.emplace_back(worker_function_no_lock, ref(shared_counter), current_start, current_end);
         }
+
+        current_start = current_end + 1;
     }
 
     // 모든 스레드 종료 대기
@@ -171,11 +189,10 @@ double run_experiment(const string& lock_name, int num_threads, bool use_lock = 
     cout << lock_name << " (" << num_threads << " threads): ";
     cout << "Time = " << duration.count() * 1000 << " ms, ";
     
-    // 정확성 검증 (정답은 NUM_OPERATIONS와 동일해야 함)
-    long long expected_result = NUM_OPERATIONS;
+    // [**3. 정확성 검증**]
     bool is_correct = (shared_counter == expected_result);
     
-    cout << "Final Count = " << shared_counter;
+    cout << "Final Sum = " << shared_counter;
     cout << (is_correct ? " (Correct)" : " (Incorrect)");
 
     if (!is_correct) {
@@ -191,8 +208,15 @@ double run_experiment(const string& lock_name, int num_threads, bool use_lock = 
 
 int main() {
     
+    // 정답을 미리 출력 (1,000,000 부터 5,000,000 까지의 합)
+    long long sum_to_end = (long long)END_NUM * (END_NUM + 1) / 2;
+    long long sum_to_start_minus_1 = (long long)(START_NUM - 1) * START_NUM / 2;
+    long long true_expected_result = sum_to_end - sum_to_start_minus_1;
+
     cout << "===== Lock Mechanism Performance Evaluation =====" << endl;
-    cout << "Total Operations: " << NUM_OPERATIONS << " (Adding 1,000,000 to 5,000,000)" << endl;
+    cout << "Target Operation: Summing integers from " << START_NUM << " to " << END_NUM << endl;
+    cout << "True Expected Result (Final Sum): " << true_expected_result << endl;
+
 
     vector<int> thread_counts = {2, 4, 8, 16, 32};
 
