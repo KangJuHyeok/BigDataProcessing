@@ -22,26 +22,9 @@ long long shared_counter = 0;
 
 // ========= [2] 커스텀 락 메커니즘 구현 공간 =========
 
-/**
- * @brief 2. Pure Spinlock (std::atomic_flag 기반)
- */
-class AtomicFlag_SpinLock {
-private:
-    std::atomic_flag flag = ATOMIC_FLAG_INIT;
-
-public:
-    void lock() {
-        while (flag.test_and_set(std::memory_order_acquire));
-    }
-
-    void unlock() {
-        flag.clear(std::memory_order_release);
-    }
-};
-
 
 /**
- * @brief 3. TAS (Test-and-Set) Lock 구현
+ * @brief 1. TAS (Test-and-Set) Lock 구현
  */
 class TAS_Lock {
     std::atomic<bool> lock_flag = false;
@@ -55,7 +38,7 @@ public:
 };
 
 /**
- * @brief 4. TTAS (Test-and-Test-and-Set) Lock 구현 공간
+ * @brief 2. TTAS (Test-and-Test-and-Set) Lock 구현 공간
  */
 class TTAS_Lock {
     std::atomic<bool> lock_flag = false;
@@ -76,7 +59,7 @@ public:
 };
 
 /**
- * @brief 5. Backoff Lock 구현 공간
+ * @brief 3. Backoff Lock 구현 공간
  */
 class Backoff_Lock {
     std::atomic<bool> lock_flag = false;
@@ -144,8 +127,6 @@ double run_experiment(const string& lock_name, int num_threads, bool use_lock = 
     LockType lock_instance;
     
     // [**1. 정답 계산 (가우스 공식)**]
-    // 1부터 N까지의 합: N * (N + 1) / 2
-    // S부터 E까지의 합: (1부터 E까지의 합) - (1부터 S-1까지의 합)
     long long sum_to_end = (long long)END_NUM * (END_NUM + 1) / 2;
     long long sum_to_start_minus_1 = (long long)(START_NUM - 1) * START_NUM / 2;
     long long expected_result = sum_to_end - sum_to_start_minus_1;
@@ -162,7 +143,7 @@ double run_experiment(const string& lock_name, int num_threads, bool use_lock = 
         int range_size = NUM_OPERATIONS / num_threads + (i < NUM_OPERATIONS % num_threads ? 1 : 0);
         int current_end = current_start + range_size - 1;
 
-        if (current_end > END_NUM) { // 마지막 스레드 보정
+        if (current_end > END_NUM) { 
             current_end = END_NUM;
         }
 
@@ -226,16 +207,13 @@ int main() {
         // 1. No Lock
         run_experiment<TAS_Lock>("No Lock", num_threads, false);
 
-        // 2. Pure Spinlock (std::mutex를 대체)
-        run_experiment<AtomicFlag_SpinLock>("Pure Spinlock (atomic_flag)", num_threads);
-
-        // 3. TAS Lock
+        // 2. TAS Lock
         run_experiment<TAS_Lock>("TAS Lock", num_threads);
         
-        // 4. TTAS Lock
+        // 3. TTAS Lock
         run_experiment<TTAS_Lock>("TTAS Lock", num_threads);
 
-        // 5. Backoff Lock
+        // 4. Backoff Lock
         run_experiment<Backoff_Lock>("Backoff Lock", num_threads);
     }
 
